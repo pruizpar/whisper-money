@@ -7,6 +7,7 @@ readonly SSH_DIR="${RUNNER_TEMP}/moneta-ssh"
 readonly SSH_KEY_FILE="${SSH_DIR}/deploy-key"
 readonly KNOWN_HOSTS_FILE="${SSH_DIR}/known-hosts"
 readonly IMAGE_TAR="${RUNNER_TEMP}/moneta-image.tar"
+readonly IMAGE_ARCHIVE="${RUNNER_TEMP}/moneta-image.tar.zst"
 readonly DOCKER_CONFIG="${RUNNER_TEMP}/moneta-docker"
 export DOCKER_CONFIG
 
@@ -30,7 +31,7 @@ cleanup() {
     sudo warp-cli --accept-tos disconnect >/dev/null 2>&1
     sudo warp-cli --accept-tos registration delete >/dev/null 2>&1
     sudo rm -f /var/lib/cloudflare-warp/mdm.xml
-    rm -rf "${SSH_DIR}" "${DOCKER_CONFIG}" "${IMAGE_TAR}"
+    rm -rf "${SSH_DIR}" "${DOCKER_CONFIG}" "${IMAGE_TAR}" "${IMAGE_ARCHIVE}"
 }
 trap cleanup EXIT
 
@@ -118,37 +119,19 @@ printf '%s' "${GITHUB_TOKEN}" \
     | docker login ghcr.io --username "${GITHUB_ACTOR}" --password-stdin >/dev/null
 docker pull --quiet "${IMAGE_REF}"
 docker save --output "${IMAGE_TAR}" "${IMAGE_REF}"
+zstd --quiet --threads=0 --output="${IMAGE_ARCHIVE}" "${IMAGE_TAR}"
+archive_sha256="$(sha256sum "${IMAGE_ARCHIVE}" | cut -d' ' -f1)"
 
-config_path="$(tar --extract --to-stdout --file="${IMAGE_TAR}" manifest.json | jq --raw-output '.[0].Config')"
-case "${config_path}" in
-    blobs/sha256/*)
-        config_digest="${config_path##*/}"
-        ;;
-    *.json)
-        config_digest="${config_path##*/}"
-        config_digest="${config_digest%.json}"
-        ;;
-    *)
-        echo "Docker archive contains an unexpected config path." >&2
-        exit 1
-        ;;
-esac
-if [[ ! "${config_digest}" =~ ^[0-9a-f]{64}$ ]]; then
-    echo "Docker archive contains an invalid config digest." >&2
-    exit 1
-fi
-image_id="sha256:${config_digest}"
-
-zstd --quiet --threads=0 --stdout "${IMAGE_TAR}" \
-    | ssh \
-        -T \
-        -i "${SSH_KEY_FILE}" \
-        -o BatchMode=yes \
-        -o IdentitiesOnly=yes \
-        -o StrictHostKeyChecking=yes \
-        -o UserKnownHostsFile="${KNOWN_HOSTS_FILE}" \
-        -o HostKeyAlias=moneta-deploy \
-        -o ServerAliveInterval=15 \
-        -o ServerAliveCountMax=4 \
-        "moneta-deploy@${DEPLOY_TARGET}" \
-        "deploy ${GITHUB_SHA} ${image_id}"
+ssh \
+    -T \
+    -i "${SSH_KEY_FILE}" \
+    -o BatchMode=yes \
+    -o IdentitiesOnly=yes \
+    -o StrictHostKeyChecking=yes \
+    -o UserKnownHostsFile="${KNOWN_HOSTS_FILE}" \
+    -o HostKeyAlias=moneta-deploy \
+    -o ServerAliveInterval=15 \
+    -o ServerAliveCountMax=4 \
+    "moneta-deploy@${DEPLOY_TARGET}" \
+    "deploy ${GITHUB_SHA} ${archive_sha256}" \
+    <"${IMAGE_ARCHIVE}"
