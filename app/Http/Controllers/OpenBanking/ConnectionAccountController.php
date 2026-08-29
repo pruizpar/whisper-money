@@ -75,7 +75,10 @@ class ConnectionAccountController extends Controller
 
         if ($validated['action'] === 'create') {
             $account = $connection->user->accounts()->create([
-                'name' => $validated['name'] ?? $iban ?? $connection->aspsp_name.' Account',
+                'name' => $connection->resolveProviderAccountName(
+                    $validated['name'] ?? null,
+                    $iban,
+                ),
                 'name_iv' => null,
                 'encrypted' => false,
                 'bank_id' => $bank->id,
@@ -160,7 +163,7 @@ class ConnectionAccountController extends Controller
             ->unique()
             ->values();
 
-        return $uids->map(function (string $uid): ?array {
+        return $uids->map(function (string $uid) use ($connection): ?array {
             try {
                 $details = $this->provider->getAccount($uid);
             } catch (\Throwable $e) {
@@ -169,7 +172,10 @@ class ConnectionAccountController extends Controller
 
             return [
                 'uid' => $uid,
-                'name' => $details['name'] ?? $details['account_id']['iban'] ?? null,
+                'name' => $connection->resolveProviderAccountName(
+                    $details['name'] ?? null,
+                    $details['account_id']['iban'] ?? null,
+                ),
                 'currency' => $details['currency'],
                 'iban' => $details['account_id']['iban'] ?? null,
             ];

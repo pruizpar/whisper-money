@@ -49,7 +49,7 @@ export function EditAccountDialog({
     redirectTo,
     deleteRedirectTo,
 }: EditAccountDialogProps) {
-    const [decryptedName, setDecryptedName] = useState('');
+    const [decryptedName, setDecryptedName] = useState<string | null>(null);
     const [deleteOpen, setDeleteOpen] = useState(false);
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [errors, setErrors] = useState<Record<string, string>>({});
@@ -71,7 +71,10 @@ export function EditAccountDialog({
     });
 
     useEffect(() => {
-        if (!open) return;
+        if (!open) {
+            setDecryptedName(null);
+            return;
+        }
 
         if (!account.encrypted) {
             setDecryptedName(account.name);
@@ -131,7 +134,7 @@ export function EditAccountDialog({
 
     const initialValues = useMemo(
         () =>
-            decryptedName && decryptedName !== '[Encrypted]'
+            decryptedName !== null && decryptedName !== '[Encrypted]'
                 ? {
                       displayName: decryptedName,
                       bank: account.bank,

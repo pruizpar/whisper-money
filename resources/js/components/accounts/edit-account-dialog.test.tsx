@@ -65,6 +65,20 @@ function makeAccount(): Account {
 }
 
 describe('EditAccountDialog', () => {
+    it('shows the form when the stored account name is empty', () => {
+        render(
+            <EditAccountDialog
+                account={{ ...makeAccount(), name: '' }}
+                open={true}
+                onOpenChange={vi.fn()}
+            />,
+        );
+
+        expect(screen.getByTestId('account-form')).not.toBeNull();
+        const updateButton = screen.getByRole('button', { name: 'Update' });
+        expect(updateButton.hasAttribute('disabled')).toBe(false);
+    });
+
     it('shows account deletion inside edit modal with confirmation dialog', () => {
         render(
             <EditAccountDialog

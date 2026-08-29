@@ -192,6 +192,21 @@ class BankingConnection extends Model
         ));
     }
 
+    public function resolveProviderAccountName(mixed $name, mixed $iban): string
+    {
+        if (is_string($name) && trim($name) !== '') {
+            return $name;
+        }
+
+        if (is_string($iban) && trim($iban) !== '') {
+            return $iban;
+        }
+
+        return filled($this->aspsp_name)
+            ? $this->aspsp_name.' Account'
+            : __('Bank Account');
+    }
+
     /**
      * Names of the pending accounts left out of the mapping screen, so the user is told
      * why an account they can see in their bank never shows up here.
@@ -201,7 +216,10 @@ class BankingConnection extends Model
     public function unmappablePendingAccountNames(): array
     {
         return array_values(array_map(
-            fn (array $account): string => $account['name'] ?? $account['account_id']['iban'] ?? __('Bank Account'),
+            fn (array $account): string => $this->resolveProviderAccountName(
+                $account['name'] ?? null,
+                $account['account_id']['iban'] ?? null,
+            ),
             array_filter(
                 $this->pending_accounts_data ?? [],
                 fn (array $account): bool => empty($account['uid']),

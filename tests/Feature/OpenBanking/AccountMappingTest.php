@@ -198,6 +198,45 @@ test('store with action create creates new accounts', function () {
     Queue::assertPushed(SyncBankingConnectionJob::class);
 });
 
+test('store replaces blank provider account names with a useful fallback', function (?string $iban, string $expectedName) {
+    Queue::fake();
+
+    $user = User::factory()->onboarded()->create();
+    $connection = BankingConnection::factory()->awaitingMapping()->create([
+        'user_id' => $user->id,
+        'aspsp_name' => 'Renta 4 Banco',
+        'pending_accounts_data' => [
+            [
+                'uid' => 'renta-4-account',
+                'currency' => 'EUR',
+                'name' => '',
+                'account_id' => ['iban' => $iban],
+            ],
+        ],
+    ]);
+
+    $this->actingAs($user)
+        ->post(route('open-banking.map-accounts.store', $connection), [
+            'mappings' => [
+                [
+                    'bank_account_uid' => 'renta-4-account',
+                    'action' => 'create',
+                    'existing_account_id' => null,
+                ],
+            ],
+        ])
+        ->assertRedirect(route('settings.connections.index'));
+
+    $this->assertDatabaseHas('accounts', [
+        'banking_connection_id' => $connection->id,
+        'external_account_id' => 'renta-4-account',
+        'name' => $expectedName,
+    ]);
+})->with([
+    'IBAN available' => ['ES1234567890', 'ES1234567890'],
+    'IBAN unavailable' => [null, 'Renta 4 Banco Account'],
+]);
+
 test('store creates investment accounts for crypto provider connections', function (string $provider, string $providerName, string $uid) {
     Queue::fake();
 
