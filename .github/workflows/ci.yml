@@ -445,6 +445,7 @@ jobs:
               - 'docker-compose.production.yml'
               - 'docker-compose.production.local.yml'
               - 'templates/coolify/**'
+              - 'scripts/deploy-production.sh'
               - '.github/workflows/ci.yml'
 
   build-image:
@@ -500,3 +501,32 @@ jobs:
           package-type: container
           min-versions-to-keep: 2
           token: ${{ github.token }}
+
+  deploy-production:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    needs: build-image
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    environment: production
+    concurrency:
+      group: moneta-production
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Checkout deployment code
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Push image to production
+        env:
+          CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+          CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+          CF_TEAM_NAME: ${{ secrets.CF_TEAM_NAME }}
+          DEPLOY_SSH_HOST_KEY: ${{ secrets.DEPLOY_SSH_HOST_KEY }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_TARGET: ${{ secrets.DEPLOY_TARGET }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: bash scripts/deploy-production.sh
