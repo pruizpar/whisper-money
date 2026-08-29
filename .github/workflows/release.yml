@@ -1,8 +1,6 @@
 name: Release
 
 on:
-  schedule:
-    - cron: "0 8 * * 1" # Mondays 08:00 UTC = 10:00 Madrid (CEST) / 09:00 (CET)
   workflow_dispatch:
     inputs:
       increment:

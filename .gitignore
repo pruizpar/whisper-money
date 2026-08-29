@@ -34,3 +34,7 @@ yarn-error.log
 .pint.cache
 /.playwright-mcp
 /build
+*.key
+*.pem
+*.p12
+*.pfx
