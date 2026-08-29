@@ -60,7 +60,24 @@ chmod 600 "${mdm_file}"
 sudo install -d -m 755 /var/lib/cloudflare-warp
 sudo install -m 600 "${mdm_file}" /var/lib/cloudflare-warp/mdm.xml
 rm -f "${mdm_file}"
+sudo systemctl enable warp-svc >/dev/null
 sudo systemctl restart warp-svc
+
+daemon_ready=0
+for _ in $(seq 1 30); do
+    if sudo warp-cli --accept-tos status >/dev/null 2>&1; then
+        daemon_ready=1
+        break
+    fi
+    sleep 1
+done
+if [[ "${daemon_ready}" -ne 1 ]]; then
+    sudo systemctl status warp-svc --no-pager >&2 || true
+    sudo journalctl --unit=warp-svc --lines=100 --no-pager >&2 || true
+    echo "Cloudflare WARP daemon failed to become ready." >&2
+    exit 1
+fi
+
 sudo warp-cli --accept-tos connect >/dev/null
 
 connected=0
