@@ -6,6 +6,9 @@ readonly IMAGE_REF="ghcr.io/${GITHUB_REPOSITORY}:${GITHUB_SHA}"
 readonly SSH_DIR="${RUNNER_TEMP}/moneta-ssh"
 readonly SSH_KEY_FILE="${SSH_DIR}/deploy-key"
 readonly KNOWN_HOSTS_FILE="${SSH_DIR}/known-hosts"
+readonly IMAGE_TAR="${RUNNER_TEMP}/moneta-image.tar"
+readonly DOCKER_CONFIG="${RUNNER_TEMP}/moneta-docker"
+export DOCKER_CONFIG
 
 for required_name in \
     CF_ACCESS_CLIENT_ID \
@@ -27,7 +30,7 @@ cleanup() {
     sudo warp-cli --accept-tos disconnect >/dev/null 2>&1
     sudo warp-cli --accept-tos registration delete >/dev/null 2>&1
     sudo rm -f /var/lib/cloudflare-warp/mdm.xml
-    rm -rf "${SSH_DIR}"
+    rm -rf "${SSH_DIR}" "${DOCKER_CONFIG}" "${IMAGE_TAR}"
 }
 trap cleanup EXIT
 
@@ -114,10 +117,29 @@ fi
 printf '%s' "${GITHUB_TOKEN}" \
     | docker login ghcr.io --username "${GITHUB_ACTOR}" --password-stdin >/dev/null
 docker pull --quiet "${IMAGE_REF}"
-image_id="$(docker image inspect --format '{{.Id}}' "${IMAGE_REF}")"
+docker save --output "${IMAGE_TAR}" "${IMAGE_REF}"
 
-docker save "${IMAGE_REF}" \
-    | zstd --quiet --threads=0 --stdout \
+config_path="$(tar --extract --to-stdout --file="${IMAGE_TAR}" manifest.json | jq --raw-output '.[0].Config')"
+case "${config_path}" in
+    blobs/sha256/*)
+        config_digest="${config_path##*/}"
+        ;;
+    *.json)
+        config_digest="${config_path##*/}"
+        config_digest="${config_digest%.json}"
+        ;;
+    *)
+        echo "Docker archive contains an unexpected config path." >&2
+        exit 1
+        ;;
+esac
+if [[ ! "${config_digest}" =~ ^[0-9a-f]{64}$ ]]; then
+    echo "Docker archive contains an invalid config digest." >&2
+    exit 1
+fi
+image_id="sha256:${config_digest}"
+
+zstd --quiet --threads=0 --stdout "${IMAGE_TAR}" \
     | ssh \
         -T \
         -i "${SSH_KEY_FILE}" \
