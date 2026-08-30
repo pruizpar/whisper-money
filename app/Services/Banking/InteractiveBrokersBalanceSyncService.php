@@ -3,6 +3,8 @@
 namespace App\Services\Banking;
 
 use App\Models\Account;
+use App\Services\Banking\Sync\BalanceSyncResumePoint;
+use App\Support\Money;
 use Illuminate\Support\Facades\Log;
 
 class InteractiveBrokersBalanceSyncService
@@ -37,15 +39,7 @@ class InteractiveBrokersBalanceSyncService
         ksort($navByDate);
         $latestDate = array_key_last($navByDate);
 
-        $sinceDate = null;
-
-        if (! $isFirstSync) {
-            $lastBalanceDate = $account->balances()->max('balance_date');
-
-            if ($lastBalanceDate) {
-                $sinceDate = $lastBalanceDate;
-            }
-        }
+        $sinceDate = BalanceSyncResumePoint::lastSyncedDate($account, $isFirstSync);
 
         $count = 0;
 
@@ -54,10 +48,10 @@ class InteractiveBrokersBalanceSyncService
                 continue;
             }
 
-            $attributes = ['balance' => (int) round($nav * 100)];
+            $attributes = ['balance' => Money::toMinor($nav, $account->currency_code)];
 
             if ($date === $latestDate && $data['investedAmount'] !== null) {
-                $attributes['invested_amount'] = (int) round($data['investedAmount'] * 100);
+                $attributes['invested_amount'] = Money::toMinor($data['investedAmount'], $account->currency_code);
             }
 
             $account->balances()->updateOrCreate(['balance_date' => $date], $attributes);

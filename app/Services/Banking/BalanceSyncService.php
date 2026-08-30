@@ -6,6 +6,7 @@ use App\Contracts\BankingProviderInterface;
 use App\Enums\TransactionSource;
 use App\Models\Account;
 use App\Models\AccountBalance;
+use App\Support\Money;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
@@ -41,7 +42,7 @@ class BalanceSyncService
             return;
         }
 
-        $amount = (int) round(floatval($balance['balance_amount']['amount']) * 100);
+        $amount = Money::toMinor(floatval($balance['balance_amount']['amount']), $account->currency_code);
         $date = $balance['reference_date'] ?? now()->toDateString();
 
         $account->balances()->updateOrCreate(
@@ -79,14 +80,18 @@ class BalanceSyncService
 
         // The reference balance comes from the bank, so it only reflects rows the
         // bank itself reported. Walking back through a hand-entered or imported
-        // row would subtract money the bank never counted.
+        // row would subtract money the bank never counted. A row the user moved
+        // to another day counts on the day the bank gave it, for the same reason:
+        // the bank's balance was reached on the bank's timeline.
+        $bankDate = 'COALESCE(source_date, transaction_date)';
+
         $dailyTotals = $account->transactions()
             ->where('source', TransactionSource::EnableBanking)
-            ->where('transaction_date', '<=', $referenceBalance->balance_date)
-            ->selectRaw('transaction_date, SUM(amount) as daily_total')
-            ->groupBy('transaction_date')
-            ->orderByDesc('transaction_date')
-            ->pluck('daily_total', 'transaction_date');
+            ->whereRaw("{$bankDate} <= ?", [$referenceBalance->balance_date->toDateString()])
+            ->selectRaw("{$bankDate} as bank_date, SUM(amount) as daily_total")
+            ->groupByRaw($bankDate)
+            ->orderByRaw("{$bankDate} desc")
+            ->pluck('daily_total', 'bank_date');
 
         if ($dailyTotals->isEmpty()) {
             return;

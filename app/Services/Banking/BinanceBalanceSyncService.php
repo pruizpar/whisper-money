@@ -3,7 +3,9 @@
 namespace App\Services\Banking;
 
 use App\Models\Account;
+use App\Services\Banking\Sync\BalanceSyncResumePoint;
 use App\Services\CurrencyConversionService;
+use App\Support\Money;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Sleep;
@@ -115,11 +117,11 @@ class BinanceBalanceSyncService
         $targetCurrency = strtoupper($account->currency_code);
 
         $endDate = now()->subDay();
-        $startDate = $isFirstSync
-            ? now()->subDays(self::SNAPSHOT_MAX_DAYS)
-            : ($account->balances()->max('balance_date')
-                ? Carbon::parse($account->balances()->max('balance_date'))->addDay()
-                : now()->subDays(self::SNAPSHOT_MAX_DAYS));
+        $startDate = BalanceSyncResumePoint::startDate(
+            $account,
+            $isFirstSync,
+            now()->subDays(self::SNAPSHOT_MAX_DAYS),
+        );
 
         if ($startDate->greaterThanOrEqualTo($endDate)) {
             return false;
@@ -166,7 +168,7 @@ class BinanceBalanceSyncService
 
             $account->balances()->updateOrCreate(
                 ['balance_date' => $date],
-                ['balance' => (int) round($totalValue * 100)],
+                ['balance' => Money::toMinor($totalValue, $targetCurrency)],
             );
 
             $count++;
@@ -256,7 +258,7 @@ class BinanceBalanceSyncService
             $totalValue += $value;
         }
 
-        return (int) round($totalValue * 100);
+        return Money::toMinor($totalValue, $targetCurrency);
     }
 
     /**
@@ -410,7 +412,7 @@ class BinanceBalanceSyncService
         $totalDeposited = $this->sumTransactionAmounts($deposits, $targetCurrency, 'deposit');
         $totalWithdrawn = $this->sumTransactionAmounts($withdrawals, $targetCurrency, 'withdrawal');
 
-        return (int) round(($totalDeposited - $totalWithdrawn) * 100);
+        return Money::toMinor($totalDeposited - $totalWithdrawn, $targetCurrency);
     }
 
     /**

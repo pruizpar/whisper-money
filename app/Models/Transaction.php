@@ -11,6 +11,7 @@ use App\Events\TransactionDeleted;
 use App\Events\TransactionUpdated;
 use App\Models\Concerns\BelongsToSpace;
 use App\Services\CategoryTree;
+use App\Services\CurrencyOptions;
 use Carbon\Carbon;
 use Database\Factories\TransactionFactory;
 use Illuminate\Contracts\Database\Query\Expression;
@@ -29,6 +30,7 @@ use Illuminate\Support\Facades\DB;
 
 /**
  * @property Carbon $transaction_date
+ * @property ?Carbon $source_date
  * @property ?string $split_parent_id
  * @property int|float $total_amount
  * @property TransactionSource $source
@@ -100,6 +102,7 @@ class Transaction extends Model
     {
         return [
             'transaction_date' => 'date:Y-m-d',
+            'source_date' => 'date:Y-m-d',
             'amount' => 'integer',
             'source' => TransactionSource::class,
             'category_source' => CategorySource::class,
@@ -107,6 +110,30 @@ class Transaction extends Model
             'ai_suggested_category_at' => 'datetime',
             'raw_data' => 'array',
         ];
+    }
+
+    /**
+     * Keep the date the source gave a row once the user moves it onto another
+     * day, so the sync watermark and the derived balance history stay on the
+     * source's timeline instead of following the edit.
+     *
+     * Only the first move records it - the point is where the source put the row,
+     * not where the user last had it. Manual rows have no source timeline to
+     * preserve, so they keep the column null.
+     */
+    protected static function booted(): void
+    {
+        static::updating(function (Transaction $transaction): void {
+            if ($transaction->source === TransactionSource::ManuallyCreated) {
+                return;
+            }
+
+            if ($transaction->source_date !== null || ! $transaction->isDirty('transaction_date')) {
+                return;
+            }
+
+            $transaction->source_date = $transaction->getOriginal('transaction_date');
+        });
     }
 
     /** @return BelongsTo<User, $this> */
@@ -433,9 +460,8 @@ class Transaction extends Model
         $query
             ->when(isset($filters['date_from']), fn (Builder $q) => $q->whereDate('transaction_date', '>=', $filters['date_from']))
             ->when(isset($filters['date_to']), fn (Builder $q) => $q->whereDate('transaction_date', '<=', $filters['date_to']))
-            // Amounts arrive in major units from the UI but are stored in cents.
-            ->when(isset($filters['amount_min']), fn (Builder $q) => $q->where('amount', '>=', $filters['amount_min'] * 100))
-            ->when(isset($filters['amount_max']), fn (Builder $q) => $q->where('amount', '<=', $filters['amount_max'] * 100))
+            ->when(isset($filters['amount_min']), fn (Builder $q) => $this->applyAmountFilter($q, (float) $filters['amount_min'], '>='))
+            ->when(isset($filters['amount_max']), fn (Builder $q) => $this->applyAmountFilter($q, (float) $filters['amount_max'], '<='))
             ->when(! empty($filters['account_ids']), fn (Builder $q) => $q->whereIn('account_id', $filters['account_ids']))
             ->when(! empty($filters['category_source']), fn (Builder $q) => $q->where('category_source', $filters['category_source']))
             ->when(! empty($filters['creditor_name']), fn (Builder $q) => $q->where('creditor_name', 'LIKE', '%'.$filters['creditor_name'].'%'))
@@ -451,6 +477,37 @@ class Transaction extends Model
         $this->applyCategoryAndLabelFilters($query, $filters);
 
         return $query;
+    }
+
+    /**
+     * An amount filter arrives from the UI in major units, while the column holds
+     * minor units at each currency's own scale. One threshold therefore becomes
+     * one comparison per scale, ORed over the currencies that share it.
+     *
+     * @param  Builder<Transaction>  $query
+     */
+    private function applyAmountFilter(Builder $query, float $majorUnits, string $operator): void
+    {
+        $currencies = app(CurrencyOptions::class);
+        $knownCodes = array_keys($currencies->decimalsMap());
+
+        $query->where(function (Builder $group) use ($currencies, $knownCodes, $majorUnits, $operator): void {
+            foreach ($currencies->codesByDecimals() as $decimals => $codes) {
+                $group->orWhere(fn (Builder $scale) => $scale
+                    ->whereIn('currency_code', $codes)
+                    ->where('amount', $operator, (int) round($majorUnits * 10 ** $decimals)));
+            }
+
+            // A row in a currency the config no longer offers still has to be
+            // filterable, and every such row predates the per-currency scale.
+            // This holds only while no *rescaled* currency is dropped from the
+            // config: retiring BTC from the offered list would leave its
+            // 8-decimal rows here, read as 2-decimal. Retire the code from the
+            // options but keep its `decimals` entry if that ever happens.
+            $group->orWhere(fn (Builder $scale) => $scale
+                ->whereNotIn('currency_code', $knownCodes)
+                ->where('amount', $operator, (int) round($majorUnits * 10 ** CurrencyOptions::DEFAULT_DECIMALS)));
+        });
     }
 
     /**
