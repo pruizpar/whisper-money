@@ -453,18 +453,20 @@ jobs:
     timeout-minutes: 30
     needs: [tests, linter, static-analysis, performance-tests, changes]
     if: ((github.ref == 'refs/heads/main' && github.event_name == 'push') || github.event_name == 'workflow_dispatch') && needs.changes.outputs.code == 'true'
+    outputs:
+      image_digest: ${{ steps.build.outputs.digest }}
     permissions:
       contents: read
       packages: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
       - name: Login to GitHub Container Registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -472,7 +474,7 @@ jobs:
 
       - name: Extract production metadata
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
@@ -481,7 +483,7 @@ jobs:
 
       - name: Build and push production image
         id: build
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           file: Dockerfile.production
@@ -505,20 +507,23 @@ jobs:
   deploy-production:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
-    needs: build-image
+    needs: [build-image, update-browser-shards]
     if: >-
-      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
-      (github.event_name == 'workflow_dispatch' && inputs.build_only == false)
+      always() &&
+      needs.build-image.result == 'success' &&
+      ((github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'workflow_dispatch' && inputs.build_only == false &&
+      needs.update-browser-shards.result == 'success'))
     environment: production
     concurrency:
-      group: moneta-production
+      group: production-deploy
       cancel-in-progress: false
     permissions:
       contents: read
       packages: read
     steps:
       - name: Checkout deployment code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
 
@@ -529,6 +534,8 @@ jobs:
           CF_TEAM_NAME: ${{ secrets.CF_TEAM_NAME }}
           DEPLOY_SSH_HOST_KEY: ${{ secrets.DEPLOY_SSH_HOST_KEY }}
           DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_SSH_USER: ${{ secrets.DEPLOY_SSH_USER }}
           DEPLOY_TARGET: ${{ secrets.DEPLOY_TARGET }}
+          IMAGE_DIGEST: ${{ needs.build-image.outputs.image_digest }}
           GITHUB_TOKEN: ${{ github.token }}
         run: bash scripts/deploy-production.sh

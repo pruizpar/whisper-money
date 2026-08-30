@@ -2,13 +2,16 @@
 
 set -Eeuo pipefail
 
-readonly IMAGE_REF="ghcr.io/${GITHUB_REPOSITORY}:${GITHUB_SHA}"
-readonly SSH_DIR="${RUNNER_TEMP}/moneta-ssh"
+readonly IMAGE_REPOSITORY="ghcr.io/${GITHUB_REPOSITORY}"
+readonly IMAGE_REF="${IMAGE_REPOSITORY}:${GITHUB_SHA}"
+readonly IMAGE_DIGEST_REF="${IMAGE_REPOSITORY}@${IMAGE_DIGEST:-}"
+readonly SSH_DIR="${RUNNER_TEMP}/production-ssh"
 readonly SSH_KEY_FILE="${SSH_DIR}/deploy-key"
 readonly KNOWN_HOSTS_FILE="${SSH_DIR}/known-hosts"
-readonly IMAGE_TAR="${RUNNER_TEMP}/moneta-image.tar"
-readonly IMAGE_ARCHIVE="${RUNNER_TEMP}/moneta-image.tar.zst"
-readonly DOCKER_CONFIG="${RUNNER_TEMP}/moneta-docker"
+readonly IMAGE_TAR="${RUNNER_TEMP}/production-image.tar"
+readonly IMAGE_ARCHIVE="${RUNNER_TEMP}/production-image.tar.zst"
+readonly DOCKER_CONFIG="${RUNNER_TEMP}/production-docker"
+readonly MDM_FILE="${RUNNER_TEMP}/production-warp-mdm.xml"
 export DOCKER_CONFIG
 
 for required_name in \
@@ -18,12 +21,22 @@ for required_name in \
     DEPLOY_TARGET \
     DEPLOY_SSH_KEY \
     DEPLOY_SSH_HOST_KEY \
+    DEPLOY_SSH_USER \
+    IMAGE_DIGEST \
     GITHUB_TOKEN; do
     if [[ -z "${!required_name:-}" ]]; then
         echo "Missing required deployment secret: ${required_name}" >&2
         exit 1
     fi
 done
+if [[ ! "${IMAGE_DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+    echo "IMAGE_DIGEST must be an immutable SHA-256 digest." >&2
+    exit 1
+fi
+if [[ ! "${DEPLOY_SSH_USER}" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]]; then
+    echo "DEPLOY_SSH_USER must contain a valid system user name." >&2
+    exit 1
+fi
 
 cleanup() {
     set +e
@@ -31,7 +44,7 @@ cleanup() {
     sudo warp-cli --accept-tos disconnect >/dev/null 2>&1
     sudo warp-cli --accept-tos registration delete >/dev/null 2>&1
     sudo rm -f /var/lib/cloudflare-warp/mdm.xml
-    rm -rf "${SSH_DIR}" "${DOCKER_CONFIG}" "${IMAGE_TAR}" "${IMAGE_ARCHIVE}"
+    rm -rf "${SSH_DIR}" "${DOCKER_CONFIG}" "${IMAGE_TAR}" "${IMAGE_ARCHIVE}" "${MDM_FILE}"
 }
 trap cleanup EXIT
 
@@ -41,10 +54,9 @@ printf 'deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] 
     "$(lsb_release -cs)" \
     | sudo tee /etc/apt/sources.list.d/cloudflare-client.list >/dev/null
 sudo apt-get update --quiet
-sudo apt-get install --yes --quiet cloudflare-warp
+sudo apt-get install --yes --quiet cloudflare-warp zstd
 
-mdm_file="$(mktemp)"
-chmod 600 "${mdm_file}"
+umask 077
 {
     printf '%s\n' '<dict>'
     printf '%s\n' '  <key>auth_client_id</key>'
@@ -60,10 +72,10 @@ chmod 600 "${mdm_file}"
     printf '%s\n' '  <key>service_mode</key>'
     printf '%s\n' '  <string>warp</string>'
     printf '%s\n' '</dict>'
-} >"${mdm_file}"
+} >"${MDM_FILE}"
 sudo install -d -m 755 /var/lib/cloudflare-warp
-sudo install -m 600 "${mdm_file}" /var/lib/cloudflare-warp/mdm.xml
-rm -f "${mdm_file}"
+sudo install -m 600 "${MDM_FILE}" /var/lib/cloudflare-warp/mdm.xml
+rm -f "${MDM_FILE}"
 sudo systemctl enable warp-svc >/dev/null
 sudo systemctl restart warp-svc
 
@@ -117,10 +129,12 @@ fi
 
 printf '%s' "${GITHUB_TOKEN}" \
     | docker login ghcr.io --username "${GITHUB_ACTOR}" --password-stdin >/dev/null
-docker pull --quiet "${IMAGE_REF}"
+docker pull --quiet "${IMAGE_DIGEST_REF}"
+docker tag "${IMAGE_DIGEST_REF}" "${IMAGE_REF}"
 docker save --output "${IMAGE_TAR}" "${IMAGE_REF}"
-zstd --quiet --threads=0 --output="${IMAGE_ARCHIVE}" "${IMAGE_TAR}"
+zstd --quiet --threads=0 -o "${IMAGE_ARCHIVE}" "${IMAGE_TAR}"
 archive_sha256="$(sha256sum "${IMAGE_ARCHIVE}" | cut -d' ' -f1)"
+archive_size="$(stat --format='%s' "${IMAGE_ARCHIVE}")"
 
 ssh \
     -T \
@@ -129,9 +143,9 @@ ssh \
     -o IdentitiesOnly=yes \
     -o StrictHostKeyChecking=yes \
     -o UserKnownHostsFile="${KNOWN_HOSTS_FILE}" \
-    -o HostKeyAlias=moneta-deploy \
+    -o HostKeyAlias=production-deploy \
     -o ServerAliveInterval=15 \
     -o ServerAliveCountMax=4 \
-    "moneta-deploy@${DEPLOY_TARGET}" \
-    "deploy ${GITHUB_SHA} ${archive_sha256}" \
+    "${DEPLOY_SSH_USER}@${DEPLOY_TARGET}" \
+    "deploy ${GITHUB_SHA} ${archive_sha256} ${archive_size}" \
     <"${IMAGE_ARCHIVE}"
